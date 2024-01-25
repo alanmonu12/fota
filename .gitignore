@@ -5,6 +5,7 @@ fota-client
 src/fota-config.h
 firebase/functions/omotion-fota-4cdb9a46f95a.json
 *.bin
+.vscode/
 
 # Created by https://www.gitignore.io/api/c,linux,macos,windows
 # Edit at https://www.gitignore.io/?templates=c,linux,macos,windows

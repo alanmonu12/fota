@@ -34,6 +34,14 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/aes.h"
 
+#include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/rsa.h>
+#include <wolfssl/wolfcrypt/signature.h>
+#include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/logging.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+
 #define ACTION_NONE             0
 #define ACTION_GENERATE_KEY     1
 #define ACTION_CREATE_PACKAGE   2
@@ -177,6 +185,8 @@ static buffer_t* encrypt_buffer(buffer_t* buf, fota_aes_key_t key) {
 static buffer_t* create_fwpk_enc_package(const char* filename, const char* model_id) {
   assert(FOTA_STORAGE_PAGE_SIZE >= 16 + strlen(model_id)+1);
 
+  int ret = 0;
+
   fota_aes_key_t model_key;
   if(!get_model_key(model_id, &model_key)) {
     return NULL;
@@ -191,19 +201,45 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   }
 
   // Import private signing key
-  mbedtls_rsa_context private_key;
-  mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
+  RsaKey pRsaKey = NULL;
+  WC_RNG rng;
+  //mbedtls_rsa_context private_key;
+  //mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
+
+  ret = wc_InitRsaKey(&pRsaKey, NULL);
+  if (ret != 0) {
+      printf("Init RSA key failed %d\n", ret);
+      return NULL;
+  }
+
+  ret = wc_InitRng(&rng);
+  if (ret != 0) {
+      printf("Init RNG failed %d\n", ret);
+      return NULL;
+  }
 
   fota_rsa_key_t modulo;
   fotai_get_public_key(modulo, FOTA_PUBLIC_KEY_TYPE_SIGNING);
 
-  mbedtls_mpi_read_binary(&private_key.N, modulo, sizeof(fota_rsa_key_t));
-  mbedtls_mpi_read_string(&private_key.D, 16, FOTA_RSA_SIGN_KEY_PRIVATE_EXPONENT);
-  mbedtls_mpi_lset (&private_key.E, OPENSSL_RSA_PUBLIC_EXPONENT);
-  private_key.len = FOTA_RSA_KEY_BITSIZE/8;
+  ret = int wc_RsaPublicKeyDecodeRaw(
+    (const byte *) modulo,
+    sizeof(modulo),
+    (const byte *) OPENSSL_RSA_PUBLIC_EXPONENT,
+    sizeof(OPENSSL_RSA_PUBLIC_EXPONENT),
+    &pRsaKey);
 
-  int err = mbedtls_rsa_complete(&private_key);
-  assert(!err);
+  if (ret < 0) {
+      printf("Failed to load public rsa key der buffer %d\n", ret);
+      return NULL;
+  }
+
+  //mbedtls_mpi_read_binary(&private_key.N, modulo, sizeof(fota_rsa_key_t));
+  //mbedtls_mpi_read_string(&private_key.D, 16, FOTA_RSA_SIGN_KEY_PRIVATE_EXPONENT);
+  //mbedtls_mpi_lset (&private_key.E, OPENSSL_RSA_PUBLIC_EXPONENT);
+  //private_key.len = FOTA_RSA_KEY_BITSIZE/8;
+
+  //int err = mbedtls_rsa_complete(&private_key);
+  //assert(!err);
 
   // Create firmware hash
   fota_sha_hash_t firmware_hash;
@@ -212,10 +248,13 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
 
   // Sign the firmware hash
   fota_rsa_key_t firmware_sign;
-  err = mbedtls_rsa_rsassa_pss_sign(&private_key, generate_random, NULL, MBEDTLS_RSA_PRIVATE, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign);
+  err = wc_RsaPSS_Sign((byte*)firmware_hash, sizeof(firmware_hash),
+                (byte*)firmware_sign, sizeof(firmware_sign),
+                WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey, &rng);
+  //mbedtls_rsa_rsassa_pss_sign(&private_key, generate_random, NULL, MBEDTLS_RSA_PRIVATE, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign);
   assert(!err);
 
-  mbedtls_rsa_free(&private_key);
+  //mbedtls_rsa_free(&private_key);
 
   // Create firmware package (.fwpk)
   buffer_t* fwpk_buf = buf_alloc(2*FOTA_STORAGE_PAGE_SIZE + ALIGN16(firmware_buf->len));
