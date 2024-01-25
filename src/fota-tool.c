@@ -250,7 +250,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   fota_rsa_key_t firmware_sign;
   err = wc_RsaPSS_Sign((byte*)firmware_hash, sizeof(firmware_hash),
                 (byte*)firmware_sign, sizeof(firmware_sign),
-                WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey, &rng);
+                WC_HASH_TYPE_SHA256, WC_MGF1SHA256, &pRsaKey, &rng);
   //mbedtls_rsa_rsassa_pss_sign(&private_key, generate_random, NULL, MBEDTLS_RSA_PRIVATE, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign);
   assert(!err);
 
