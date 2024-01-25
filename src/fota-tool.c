@@ -186,6 +186,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   assert(FOTA_STORAGE_PAGE_SIZE >= 16 + strlen(model_id)+1);
 
   int ret = 0;
+  int err = 0;
 
   fota_aes_key_t model_key;
   if(!get_model_key(model_id, &model_key)) {
