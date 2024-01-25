@@ -198,6 +198,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   // Load firmware file
   buffer_t* firmware_buf = buf_from_file(filename);
   if(!firmware_buf) {
+    printf("Error reading file");
     return NULL;
   }
 
@@ -207,12 +208,14 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   //mbedtls_rsa_context private_key;
   //mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
 
+  printf("Init RSA key");
   ret = wc_InitRsaKey(&pRsaKey, NULL);
   if (ret != 0) {
       printf("Init RSA key failed %d\n", ret);
       return NULL;
   }
 
+  printf("Init RNG");
   ret = wc_InitRng(&rng);
   if (ret != 0) {
       printf("Init RNG failed %d\n", ret);
@@ -222,6 +225,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   fota_rsa_key_t modulo;
   fotai_get_public_key(modulo, FOTA_PUBLIC_KEY_TYPE_SIGNING);
 
+  printf("RSA public key Decode");
   ret = wc_RsaPublicKeyDecodeRaw(
     (const byte *) modulo,
     sizeof(modulo),
