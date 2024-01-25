@@ -201,7 +201,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   }
 
   // Import private signing key
-  RsaKey pRsaKey = NULL;
+  RsaKey pRsaKey;
   WC_RNG rng;
   //mbedtls_rsa_context private_key;
   //mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
@@ -221,7 +221,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   fota_rsa_key_t modulo;
   fotai_get_public_key(modulo, FOTA_PUBLIC_KEY_TYPE_SIGNING);
 
-  ret = int wc_RsaPublicKeyDecodeRaw(
+  ret = wc_RsaPublicKeyDecodeRaw(
     (const byte *) modulo,
     sizeof(modulo),
     (const byte *) OPENSSL_RSA_PUBLIC_EXPONENT,
