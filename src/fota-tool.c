@@ -201,6 +201,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
     printf("Error reading file");
     return NULL;
   }
+  printf("File read succefully");
 
   // Import private signing key
   RsaKey pRsaKey;
