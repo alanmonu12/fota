@@ -41,6 +41,8 @@
 #include <wolfssl/wolfcrypt/hash.h>
 #include <wolfssl/wolfcrypt/logging.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/settings.h>
 
 #define ACTION_NONE             0
 #define ACTION_GENERATE_KEY     1
@@ -49,7 +51,7 @@
 #define ACTION_VERIFY_PACKAGE   4
 #define ACTION_INSTALL_FIRMWARE 5
 
-#define ALIGN16(v) (((v)+15)&(~15))
+//#define ALIGN16(v) (((v)+15)&(~15))
 
 typedef struct {
   const char* id;
@@ -188,6 +190,21 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   int ret = 0;
   int err = 0;
 
+  RsaKey* pRsaKey;
+  WC_RNG* rng;
+
+  pRsaKey = malloc(sizeof(RsaKey));
+  if (!pRsaKey) {
+    printf("RSA_generate_key failed with error\n");
+    return NULL;
+  }
+
+  rng = malloc(sizeof(rng));
+  if (!rng) {
+    printf("rng failed with error\n");
+    return NULL;
+  }
+
   fota_aes_key_t model_key;
   if(!get_model_key(model_id, &model_key)) {
     return NULL;
@@ -201,38 +218,52 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
     printf("Error reading file");
     return NULL;
   }
-  printf("File read succefully");
 
   // Import private signing key
-  RsaKey pRsaKey;
-  WC_RNG rng;
   //mbedtls_rsa_context private_key;
   //mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
 
-  printf("Init RSA key");
-  ret = wc_InitRsaKey(&pRsaKey, NULL);
+  ret = wc_InitRsaKey(pRsaKey, NULL);
   if (ret != 0) {
       printf("Init RSA key failed %d\n", ret);
       return NULL;
   }
 
-  printf("Init RNG");
-  ret = wc_InitRng(&rng);
+  ret = wc_InitRng(rng);
   if (ret != 0) {
       printf("Init RNG failed %d\n", ret);
+      return NULL;
+  }
+
+  printf("Creating firmware package for model %s\n", model_id);
+
+  ret = wc_RsaSetRNG(pRsaKey, rng);
+
+  if (ret != 0) {
+      printf("Set RSA RNG failed %d\n", ret);
       return NULL;
   }
 
   fota_rsa_key_t modulo;
   fotai_get_public_key(modulo, FOTA_PUBLIC_KEY_TYPE_SIGNING);
 
-  printf("RSA public key Decode");
-  ret = wc_RsaPublicKeyDecodeRaw(
-    (const byte *) modulo,
-    sizeof(modulo),
-    (const byte *) OPENSSL_RSA_PUBLIC_EXPONENT,
-    sizeof(OPENSSL_RSA_PUBLIC_EXPONENT),
-    &pRsaKey);
+  byte n[] = {
+      0xc7, 0xae, 0x34, 0x95, 0xbc, 0xfb, 0x87, 0xf3, 0xfd, 0x94, 0xf6, 0xd6,
+      0x79, 0x13, 0x5b, 0xd7, 0xec, 0x6e, 0x23, 0xdc, 0xa3, 0xbf, 0x8a, 0x9d,
+      0x5e, 0x30, 0xcf, 0xa3, 0x68, 0xd3, 0x3b, 0xaa, 0x06, 0xb1, 0x48, 0x66,
+      0x63, 0x42, 0xa6, 0xf9, 0xfd, 0x2f, 0x6c, 0xc0, 0x62, 0x83, 0xa8, 0x1c,
+      0x33, 0x95, 0x4c, 0x6c, 0x8e, 0x52, 0x62, 0xf0, 0xed, 0x39, 0xc7, 0xe4,
+      0xa3, 0x5f, 0xe8, 0x23, 0x20, 0x9e, 0xbf, 0xf6, 0x51, 0x57, 0x63, 0x70,
+      0x34, 0x3b, 0xd9, 0xe6, 0x5d, 0xb0, 0x6c, 0xae, 0xf2, 0xdb, 0x25, 0x2d,
+      0xe7, 0x62, 0x06, 0xc7, 0x76, 0x61, 0xf2, 0xf3, 0xfb, 0x56, 0x83, 0xac,
+      0x29, 0xd9, 0x12, 0x85, 0x3c, 0x50, 0x1d, 0x7b, 0x86, 0xdd, 0xa4, 0x20,
+      0xcf, 0xb7, 0xad, 0x94, 0x7c, 0x59, 0x6f, 0x8f, 0x60, 0x2b, 0x5f, 0xe4,
+      0x76, 0xd4, 0x1f, 0xe0, 0xda, 0xb7, 0xb1, 0x49
+  };
+
+  byte e[] = {0x01, 0x00, 0x01};
+
+  ret = wc_RsaPublicKeyDecodeRaw(n, sizeof(n), e, sizeof(e), pRsaKey);
 
   if (ret < 0) {
       printf("Failed to load public rsa key der buffer %d\n", ret);
@@ -254,12 +285,13 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
 
   // Sign the firmware hash
   fota_rsa_key_t firmware_sign;
-  err = wc_RsaPSS_Sign((byte*)firmware_hash, sizeof(firmware_hash),
-                (byte*)firmware_sign, sizeof(firmware_sign),
-                WC_HASH_TYPE_SHA256, WC_MGF1SHA256, &pRsaKey, &rng);
+  err = wc_RsaPSS_Sign((byte*)firmware_hash, sizeof(firmware_hash), (byte*)firmware_sign, sizeof(firmware_sign), WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey, rng);
+  if (err != 0) {
+    printf("wc_RsaPSS_Sign failed %d\n", err);
+    return NULL;
+  }
   //mbedtls_rsa_rsassa_pss_sign(&private_key, generate_random, NULL, MBEDTLS_RSA_PRIVATE, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign);
-  assert(!err);
-
+  //assert(!err);
   //mbedtls_rsa_free(&private_key);
 
   // Create firmware package (.fwpk)
@@ -274,7 +306,7 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
   buf_write(fwpk_buf, firmware_buf->data, firmware_buf->len);
 
   free(firmware_buf);
-  // buf_print("fwpk", fwpk_buf);
+  //buf_print("fwpk", fwpk_buf);
 
   // Encrypt package binary (.fwpk.enc)
   buffer_t* fwpk_enc_buf = encrypt_buffer(fwpk_buf, model_key);
@@ -331,6 +363,11 @@ int main(int argc, char* argv[]) {
       break;
     }
   }
+
+  wolfSSL_Debugging_ON();
+
+  wolfSSL_Init();
+
 
   if(action == ACTION_GENERATE_KEY) {
     if(model_id) {
