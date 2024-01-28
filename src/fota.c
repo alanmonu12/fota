@@ -32,6 +32,17 @@
 #include "mbedtls/sha256.h"
 #include "fota.h"
 
+
+#include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/rsa.h>
+#include <wolfssl/wolfcrypt/signature.h>
+#include <wolfssl/wolfcrypt/hash.h>
+#include <wolfssl/wolfcrypt/logging.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/settings.h>
+
 #define PROCESS_MODE_VERIFY 0
 #define PROCESS_MODE_INSTALL 1
 
@@ -178,6 +189,50 @@ static void decrypt_free(aes_decrypt_t* decrypt) {
 
 static int process_package(int mode, fota_sha_hash_t firmware_hash) {
 
+    RsaKey* pRsaKey = NULL;
+    WC_RNG rng;
+    /* PSS requires message to be same as hash digest (SHA256=32) */
+    //unsigned char pSignature[RSA_KEY_SIZE/8];
+    //unsigned char pDecrypted[RSA_KEY_SIZE/8];
+    int ret = 0;
+    int sz;
+    //int size = szMessage_size;
+    word32 idx = 0;
+    //unsigned char derBuf[MAX_DER_SIZE];
+    FILE* f;
+
+  uint8_t derBuf[2048];
+
+      wolfSSL_Debugging_ON();
+
+    wolfSSL_Init();
+
+    pRsaKey = (RsaKey*)malloc(8368);
+    if (!pRsaKey) {
+        printf("RSA_generate_key failed with error\n");
+        return 0;
+    }
+
+    ret = wc_InitRsaKey(pRsaKey, NULL);
+    if (ret != 0) {
+        printf("Init RSA key failed %d\n", ret);
+        return ret;
+    }
+
+    ret = wc_InitRng(&rng);
+    if (ret != 0) {
+        printf("Init RNG failed %d\n", ret);
+        wc_FreeRsaKey(pRsaKey);
+        return ret;
+    }
+
+    ret = wc_RsaSetRNG(pRsaKey, &rng);
+    if (ret != 0) {
+        printf("Set RSA RNG failed %d\n", ret);
+        return 4;
+    }
+
+
   uint8_t storage_page[FOTA_STORAGE_PAGE_SIZE];
   aes_decrypt_t decrypt_unique = {0}, decrypt_model = {0};
   int err = FOTA_NO_ERROR;
@@ -286,10 +341,46 @@ static int process_package(int mode, fota_sha_hash_t firmware_hash) {
     try(mbedtls_sha256_finish_ret(&sha_ctx, firmware_hash));
 
     // Get the public signing key
-    try(get_public_key(&public_key, FOTA_PUBLIC_KEY_TYPE_SIGNING));
+    f = fopen("./RsaPubKey.der", "rb");
+    //printf("open private key to %s\n", "openssl_key.der");
+
+    if (f == NULL) {
+        printf("unable to write out public key\n");
+              return NULL;
+    }
+    else {
+        fseek(f, 0, SEEK_END);
+        sz = ftell(f);
+        if (sz > sizeof(derBuf)) {
+            printf("File %s exceeds max size\n", "./openssl_key.der");
+            fclose(f);
+            return FOTA_ERROR_VERIFICATION_FAILED;
+        }
+        fseek(f, 0, SEEK_SET);
+        sz = fread(derBuf, 1, sz, f);
+        fclose(f);
+    }
+
+    //try(get_public_key(&public_key, FOTA_PUBLIC_KEY_TYPE_SIGNING));
+
+    /* Generate an RSA key pair */
+    ret = wc_RsaPublicKeyDecode(derBuf, &idx, pRsaKey, 2048);
+    
+    if (ret != 0) {
+        printf("RSA_private_encrypt failed with error %d\n", ret);
+        return 4;
+    }
+
+    word32 buf_out[250];
 
     // Verify signature
-    try(mbedtls_rsa_pkcs1_verify(&public_key, NULL, NULL, MBEDTLS_RSA_PUBLIC, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign));
+    ret = wc_RsaPSS_Verify(firmware_sign, 128, buf_out, 250,
+        WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey);
+
+  if (ret <= 0)return FOTA_ERROR_VERIFICATION_FAILED;
+  else return FOTA_NO_ERROR;
+
+    //try(mbedtls_rsa_pkcs1_verify(&public_key, NULL, NULL, MBEDTLS_RSA_PUBLIC, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign));
   }
 
 CATCH:

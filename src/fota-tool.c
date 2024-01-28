@@ -51,7 +51,10 @@
 #define ACTION_VERIFY_PACKAGE   4
 #define ACTION_INSTALL_FIRMWARE 5
 
-//#define ALIGN16(v) (((v)+15)&(~15))
+#define RSA_KEY_SIZE            2048
+#define MAX_DER_SIZE            2048
+
+#define ALIGN16_r(v) (((v)+15)&(~15))
 
 typedef struct {
   const char* id;
@@ -63,6 +66,23 @@ static uint8_t hmac_key[] = FOTA_HMAC_KEY;
 
 extern FILE* g_package_file;
 extern FILE* g_install_file;
+
+static const char* kRsaSignOpt = "-s";
+static const char* kRsaPubKey = "./rsa-public.der";
+static const char* kRsaPriKey = "./rsa-private.pem";
+
+static const byte rsa_privatekey[] = {
+0xab, 0x5f, 0xe7, 0x14, 0x03, 0xf4, 0x66, 0x97, 0x43, 0xd9, 0x52, 0xce, 
+0x3c, 0x5c, 0x40, 0xf4, 0x83, 0x12, 0x40, 0xad, 0x6c, 0x1c, 0x7f, 0x9a, 
+0x37, 0x5c, 0x49, 0x8b, 0x5f, 0x05, 0x62, 0xcf, 0x27, 0xbd, 0xb9, 0xf1, 
+0x9f, 0x66, 0x16, 0x27, 0x49, 0x38, 0x71, 0xd7, 0x7c, 0xa5, 0x47, 0x3a, 
+0xdd, 0x96, 0xcd, 0x33, 0xe0, 0xf5, 0x8b, 0x40, 0x1e, 0x5b, 0xbe, 0x48, 
+0x7f, 0x04, 0x80, 0xce, 0x99, 0x0f, 0xf4, 0xee, 0xcb, 0x44, 0x03, 0x05, 
+0x9f, 0xfb, 0xba, 0xfb, 0x90, 0x83, 0x16, 0x7a, 0xcb, 0x39, 0x26, 0x53, 
+0xf4, 0x66, 0xab, 0xcd, 0xf3, 0x2d, 0x37, 0xd3, 0x68, 0xda, 0xea, 0x31, 
+0x04, 0x1a, 0xcd, 0x8e, 0xd6, 0x1b, 0x9c, 0xf8, 0xf2, 0x19, 0x99, 0x2d, 
+0x1a, 0x88, 0x3e, 0x68, 0xde, 0xf1, 0x5d, 0x43, 0x20, 0x7f, 0xb4, 0xfc, 
+0xa2, 0xa8, 0x18, 0x8a, 0x8c, 0x4d, 0x69, 0x81};
 
 static void print_usage() {
   printf("Usage: fota-tool [-mgfrvil] <arg>\n");
@@ -166,7 +186,7 @@ static buffer_t* encrypt_buffer(buffer_t* buf, fota_aes_key_t key) {
   fota_aes_iv_t iv;
   fotai_generate_random(iv, sizeof(fota_aes_iv_t));
 
-  buffer_t* enc_buf = buf_alloc(FOTA_STORAGE_PAGE_SIZE + ALIGN16(buf->len));
+  buffer_t* enc_buf = buf_alloc(FOTA_STORAGE_PAGE_SIZE + ALIGN16_r(buf->len));
   buf_write(enc_buf, "ENCC", 4);
   buf_write_uint32(enc_buf, buf->len);
   buf_seekto(enc_buf, 16);
@@ -184,26 +204,217 @@ static buffer_t* encrypt_buffer(buffer_t* buf, fota_aes_key_t key) {
   return enc_buf;
 }
 
+static int firmware_sign(byte* szMessage, size_t szMessage_size, byte* buffer, int buffer_size, unsigned char* derBuf, word32 derBuf_size) {
+/* These examples require RSA and Key Gen */
+#if !defined(NO_RSA) && defined(WOLFSSL_KEY_GEN)
+    RsaKey* pRsaKey = NULL;
+    WC_RNG rng;
+    /* PSS requires message to be same as hash digest (SHA256=32) */
+    unsigned char pSignature[RSA_KEY_SIZE/8];
+    //unsigned char pDecrypted[RSA_KEY_SIZE/8];
+    int ret = 0;
+    int sz;
+    //int size = szMessage_size;
+    word32 idx = 0;
+    //unsigned char derBuf[MAX_DER_SIZE];
+    FILE* f;
+
+
+    wolfSSL_Debugging_ON();
+
+    wolfSSL_Init();
+
+    pRsaKey = (RsaKey*)malloc(8368);
+    if (!pRsaKey) {
+        printf("RSA_generate_key failed with error\n");
+        return 0;
+    }
+
+    ret = wc_InitRsaKey(pRsaKey, NULL);
+    if (ret != 0) {
+        printf("Init RSA key failed %d\n", ret);
+        return ret;
+    }
+
+    ret = wc_InitRng(&rng);
+    if (ret != 0) {
+        printf("Init RNG failed %d\n", ret);
+        wc_FreeRsaKey(pRsaKey);
+        return ret;
+    }
+
+    ret = wc_RsaSetRNG(pRsaKey, &rng);
+    if (ret != 0) {
+        printf("Set RSA RNG failed %d\n", ret);
+        goto prog_end;
+    }
+
+    /* Generate an RSA key pair */
+    ret = wc_RsaPrivateKeyDecode(derBuf, &idx, pRsaKey, derBuf_size);
+    
+    if (ret != 0) {
+        printf("RSA_private_encrypt failed with error %d\n", ret);
+        goto prog_end;
+    }
+
+    /*
+    if (pRsaKey) {
+        f = fopen(kRsaPubKey, "wb");
+        printf("writing public key to %s\n", kRsaPubKey);
+        if (f == NULL) {
+            printf("unable to write out public key\n");
+        }
+        else {
+            sz = wc_RsaKeyToPublicDer(pRsaKey, derBuf, sizeof(derBuf));
+            if (sz <= 0) {
+                printf("error with rsa to public der %d\n", sz);
+                goto prog_end;
+            }
+            else {
+                fwrite(derBuf, 1, sz, f);
+            }
+            fclose(f);
+        }
+    }
+
+    if (pRsaKey) {
+        f = fopen(kRsaPriKey, "wb");
+        printf("writing private key to %s\n", kRsaPriKey);
+        if (f == NULL) {
+            printf("unable to write out kRsaPriKey key\n");
+        }
+        else {
+            sz = wc_RsaKeyToPublicDer(pRsaKey, derBuf, sizeof(derBuf));
+            if (sz <= 0) {
+                printf("error with rsa to public der %d\n", sz);
+                goto prog_end;
+            }
+            else {
+                fwrite(derBuf, 1, sz, f);
+            }
+            fclose(f);
+        }
+    }
+    
+    f = fopen(kRsaPubKey, "rb");
+    printf("reading in RSA key to verify signature\n");
+    if (f == NULL) {
+        printf("unable to open public key\n");
+    }
+    else {
+        fseek(f, 0, SEEK_END);
+        sz = ftell(f);
+        if (sz > sizeof(derBuf)) {
+            printf("File %s exceeds max size\n", kRsaPubKey);
+            fclose(f);
+            return BUFFER_E;
+        }
+        fseek(f, 0, SEEK_SET);
+        sz = fread(derBuf, 1, sz, f);
+        fclose(f);
+
+        ret = wc_RsaPublicKeyDecode(derBuf, &idx, pRsaKey, sz);
+        if (ret < 0) {
+            printf("Failed to load public rsa key der buffer %d\n", ret);
+            goto prog_end;
+        }
+    }
+
+    f = fopen("sign.txt", "wb");
+    printf("Creating PSS signature and writing to %s\n", "sign.txt");
+    if (f == NULL) {
+        printf("error opening output file %s\n", "sign.txt");
+        goto prog_end;
+    }
+*/
+
+    /* perform digital signature */
+    ret = wc_RsaPSS_Sign((byte*)szMessage, szMessage_size,
+            pSignature, sizeof(pSignature),
+            WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey, &rng);
+    if (ret <= 0) {
+        printf("RSA_private_encrypt failed with error %d\n", ret);
+        goto prog_end;
+    }
+    sz = ret;
+
+    memcpy(buffer, pSignature, sz);
+    //fwrite(pSignature, 1, sz, f);
+    //fclose(f);
+
+    /*
+    byte* pt;
+
+    f = fopen("sign.txt", "rb");
+    if (f == NULL) {
+        printf("unable to open %s\n", "sign.txt");
+        goto prog_end;
+    }
+
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    if (sz > sizeof(pSignature)) {
+        printf("file is too big (%d bytes)\n", sz);
+        fclose(f);
+        goto prog_end;
+    }
+    fseek(f, 0, SEEK_SET);
+    sz = fread(pSignature, 1, sz, f);
+    fclose(f);
+
+    /* now we will verify the signature
+    Start by a RAW decrypt of the signature
+    /*
+    pt = pDecrypted;
+    ret = wc_RsaPSS_VerifyInline(pSignature, sz, &pt,
+            WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey);
+    if (ret <= 0) {
+        printf("RSA_public_decrypt failed with error %d\n", ret);
+        goto prog_end;
+    }
+    else {
+        sz = ret;
+        ret = wc_RsaPSS_CheckPadding((byte*)sMessage, size,
+            pt, sz, WC_HASH_TYPE_SHA256);
+        if (ret == 0) {
+            printf("RSA PSS verify success\n");
+        }
+        else {
+            printf("RSA PSS Padding check failed! %d\n", ret);
+            goto prog_end;
+        }
+    }
+    */
+
+prog_end:
+
+    wc_FreeRsaKey(pRsaKey);
+
+    //if (pRsaKey)
+        //free(pRsaKey);
+
+    wc_FreeRng(&rng);
+    wolfSSL_Cleanup();
+
+    return 0;
+#else
+    (void)kRsaSignOpt;
+    (void)kRsaPubKey;
+
+    printf("wolfSSL missing build features.\n");
+    printf("Please build using `./configure --enable-rsapss --enable-keygen`\n");
+    return -1;
+#endif
+}
+
 static buffer_t* create_fwpk_enc_package(const char* filename, const char* model_id) {
   assert(FOTA_STORAGE_PAGE_SIZE >= 16 + strlen(model_id)+1);
 
   int ret = 0;
   int err = 0;
-
-  RsaKey* pRsaKey;
-  WC_RNG* rng;
-
-  pRsaKey = malloc(sizeof(RsaKey));
-  if (!pRsaKey) {
-    printf("RSA_generate_key failed with error\n");
-    return NULL;
-  }
-
-  rng = malloc(sizeof(rng));
-  if (!rng) {
-    printf("rng failed with error\n");
-    return NULL;
-  }
+  FILE* f;
+  int sz = 0;
+  unsigned char derBuf[MAX_DER_SIZE];
 
   fota_aes_key_t model_key;
   if(!get_model_key(model_id, &model_key)) {
@@ -219,89 +430,48 @@ static buffer_t* create_fwpk_enc_package(const char* filename, const char* model
     return NULL;
   }
 
-  // Import private signing key
-  //mbedtls_rsa_context private_key;
-  //mbedtls_rsa_init(&private_key, MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA256);
-
-  ret = wc_InitRsaKey(pRsaKey, NULL);
-  if (ret != 0) {
-      printf("Init RSA key failed %d\n", ret);
-      return NULL;
-  }
-
-  ret = wc_InitRng(rng);
-  if (ret != 0) {
-      printf("Init RNG failed %d\n", ret);
-      return NULL;
-  }
-
-  printf("Creating firmware package for model %s\n", model_id);
-
-  ret = wc_RsaSetRNG(pRsaKey, rng);
-
-  if (ret != 0) {
-      printf("Set RSA RNG failed %d\n", ret);
-      return NULL;
-  }
-
-  fota_rsa_key_t modulo;
-  fotai_get_public_key(modulo, FOTA_PUBLIC_KEY_TYPE_SIGNING);
-
-  byte n[] = {
-      0xc7, 0xae, 0x34, 0x95, 0xbc, 0xfb, 0x87, 0xf3, 0xfd, 0x94, 0xf6, 0xd6,
-      0x79, 0x13, 0x5b, 0xd7, 0xec, 0x6e, 0x23, 0xdc, 0xa3, 0xbf, 0x8a, 0x9d,
-      0x5e, 0x30, 0xcf, 0xa3, 0x68, 0xd3, 0x3b, 0xaa, 0x06, 0xb1, 0x48, 0x66,
-      0x63, 0x42, 0xa6, 0xf9, 0xfd, 0x2f, 0x6c, 0xc0, 0x62, 0x83, 0xa8, 0x1c,
-      0x33, 0x95, 0x4c, 0x6c, 0x8e, 0x52, 0x62, 0xf0, 0xed, 0x39, 0xc7, 0xe4,
-      0xa3, 0x5f, 0xe8, 0x23, 0x20, 0x9e, 0xbf, 0xf6, 0x51, 0x57, 0x63, 0x70,
-      0x34, 0x3b, 0xd9, 0xe6, 0x5d, 0xb0, 0x6c, 0xae, 0xf2, 0xdb, 0x25, 0x2d,
-      0xe7, 0x62, 0x06, 0xc7, 0x76, 0x61, 0xf2, 0xf3, 0xfb, 0x56, 0x83, 0xac,
-      0x29, 0xd9, 0x12, 0x85, 0x3c, 0x50, 0x1d, 0x7b, 0x86, 0xdd, 0xa4, 0x20,
-      0xcf, 0xb7, 0xad, 0x94, 0x7c, 0x59, 0x6f, 0x8f, 0x60, 0x2b, 0x5f, 0xe4,
-      0x76, 0xd4, 0x1f, 0xe0, 0xda, 0xb7, 0xb1, 0x49
-  };
-
-  byte e[] = {0x01, 0x00, 0x01};
-
-  ret = wc_RsaPublicKeyDecodeRaw(n, sizeof(n), e, sizeof(e), pRsaKey);
-
-  if (ret < 0) {
-      printf("Failed to load public rsa key der buffer %d\n", ret);
-      return NULL;
-  }
-
-  //mbedtls_mpi_read_binary(&private_key.N, modulo, sizeof(fota_rsa_key_t));
-  //mbedtls_mpi_read_string(&private_key.D, 16, FOTA_RSA_SIGN_KEY_PRIVATE_EXPONENT);
-  //mbedtls_mpi_lset (&private_key.E, OPENSSL_RSA_PUBLIC_EXPONENT);
-  //private_key.len = FOTA_RSA_KEY_BITSIZE/8;
-
-  //int err = mbedtls_rsa_complete(&private_key);
-  //assert(!err);
 
   // Create firmware hash
   fota_sha_hash_t firmware_hash;
   err = mbedtls_sha256_ret(firmware_buf->data, firmware_buf->len, firmware_hash, 0);
   assert(!err);
 
-  // Sign the firmware hash
-  fota_rsa_key_t firmware_sign;
-  err = wc_RsaPSS_Sign((byte*)firmware_hash, sizeof(firmware_hash), (byte*)firmware_sign, sizeof(firmware_sign), WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey, rng);
-  if (err != 0) {
-    printf("wc_RsaPSS_Sign failed %d\n", err);
-    return NULL;
+      //printf("Reading RSA key to make a PSS signature\n");
+
+  f = fopen("./openssl_key.der", "rb");
+  //printf("open private key to %s\n", "openssl_key.der");
+
+  if (f == NULL) {
+      printf("unable to write out public key\n");
+            return NULL;
   }
-  //mbedtls_rsa_rsassa_pss_sign(&private_key, generate_random, NULL, MBEDTLS_RSA_PRIVATE, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign);
-  //assert(!err);
-  //mbedtls_rsa_free(&private_key);
+  else {
+      fseek(f, 0, SEEK_END);
+      sz = ftell(f);
+      if (sz > sizeof(derBuf)) {
+          printf("File %s exceeds max size\n", kRsaPubKey);
+          fclose(f);
+          return BUFFER_E;
+      }
+      fseek(f, 0, SEEK_SET);
+      sz = fread(derBuf, 1, sz, f);
+      fclose(f);
+  }
+
+  // Sign the firmware hash
+  byte firmware_s[128] = {'/0'};
+
+  firmware_sign((byte*)firmware_hash, 32, firmware_s, 128, derBuf, sz);
+
 
   // Create firmware package (.fwpk)
-  buffer_t* fwpk_buf = buf_alloc(2*FOTA_STORAGE_PAGE_SIZE + ALIGN16(firmware_buf->len));
+  buffer_t* fwpk_buf = buf_alloc(2*FOTA_STORAGE_PAGE_SIZE + ALIGN16_r(firmware_buf->len));
   buf_write(fwpk_buf, "FWPK", 4);
   buf_write_uint32(fwpk_buf, firmware_buf->len);
   buf_seekto(fwpk_buf, 16);
   buf_write(fwpk_buf, model_id, strlen(model_id)+1);
   buf_seekto(fwpk_buf, FOTA_STORAGE_PAGE_SIZE);
-  buf_write(fwpk_buf, firmware_sign, sizeof(fota_rsa_key_t));
+  buf_write(fwpk_buf, firmware_s, sizeof(fota_rsa_key_t));
   buf_seekto(fwpk_buf, 2*FOTA_STORAGE_PAGE_SIZE);
   buf_write(fwpk_buf, firmware_buf->data, firmware_buf->len);
 
@@ -363,10 +533,6 @@ int main(int argc, char* argv[]) {
       break;
     }
   }
-
-  wolfSSL_Debugging_ON();
-
-  wolfSSL_Init();
 
 
   if(action == ACTION_GENERATE_KEY) {
