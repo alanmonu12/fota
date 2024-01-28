@@ -372,13 +372,35 @@ static int process_package(int mode, fota_sha_hash_t firmware_hash) {
     }
 
     word32 buf_out[250];
+    unsigned char pDecrypted[1024/8];
+    byte* pt;
 
     // Verify signature
-    ret = wc_RsaPSS_Verify(firmware_sign, 128, buf_out, 250,
-        WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey);
+    //ret = wc_RsaPSS_Verify(firmware_sign, 128, buf_out, 250,
+        //WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey);
 
-  if (ret <= 0)return FOTA_ERROR_VERIFICATION_FAILED;
-  else return FOTA_NO_ERROR;
+    pt = pDecrypted;
+    ret = wc_RsaPSS_VerifyInline(firmware_sign, 128, &pt,
+            WC_HASH_TYPE_SHA256, WC_MGF1SHA256, pRsaKey);
+    if (ret <= 0) {
+        printf("RSA_public_decrypt failed with error %d\n", ret);
+        return FOTA_ERROR_VERIFICATION_FAILED;
+    }
+    else {
+        sz = ret;
+        ret = wc_RsaPSS_CheckPadding((byte*)firmware_hash, 32,
+            pt, sz, WC_HASH_TYPE_SHA256);
+        if (ret == 0) {
+            printf("RSA PSS verify success\n");
+        }
+        else {
+            printf("RSA PSS Padding check failed! %d\n", ret);
+            return FOTA_ERROR_VERIFICATION_FAILED;
+        }
+    }
+
+  if (ret == 0)return FOTA_NO_ERROR;
+  else return FOTA_ERROR_VERIFICATION_FAILED;
 
     //try(mbedtls_rsa_pkcs1_verify(&public_key, NULL, NULL, MBEDTLS_RSA_PUBLIC, MBEDTLS_MD_SHA256, 0, firmware_hash, firmware_sign));
   }
